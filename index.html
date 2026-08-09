@@ -73,6 +73,31 @@ header.app-header{
 }
 .date-pill input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.7;}
 
+.mode-badge{
+  font-family:'Rajdhani',sans-serif;font-weight:700;font-size:12px;letter-spacing:.06em;text-transform:uppercase;
+  padding:6px 13px;border-radius:999px;display:flex;align-items:center;gap:6px;
+}
+.mode-badge.dev{background:rgba(31,165,99,.18);color:#7be8ae;border:1px solid rgba(123,232,174,.35);}
+.mode-badge.view{background:rgba(255,255,255,.08);color:#9fb0cc;border:1px solid rgba(255,255,255,.14);}
+
+.conn-badge{
+  font-family:'Inter',sans-serif;font-weight:600;font-size:11.5px;
+  padding:6px 12px;border-radius:999px;white-space:nowrap;
+}
+.conn-badge.live{background:rgba(31,165,99,.18);color:#7be8ae;}
+.conn-badge.connecting{background:rgba(227,150,14,.18);color:#f5c368;}
+.conn-badge.offline{background:rgba(255,255,255,.08);color:#9fb0cc;}
+
+/* ---------- View-only lockdown ---------- */
+body.view-only .dev-only{display:none !important;}
+body.view-only input:disabled, body.view-only select:disabled{opacity:.65;cursor:not-allowed;}
+body.view-only .method-radios{pointer-events:none;}
+body.view-only .method-radios label{opacity:.75;}
+.readonly-tag{font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;text-transform:uppercase;letter-spacing:.04em;display:inline-block;}
+.readonly-tag.paid{background:var(--win-bg);color:var(--win);}
+.readonly-tag.unpaid{background:var(--loss-bg);color:var(--loss);}
+.view-note{padding:14px 16px;text-align:center;color:var(--ink-dim);font-size:12.5px;font-style:italic;}
+
 /* ---------- Tabs ---------- */
 nav.tabs{
   background:var(--navy-2);
@@ -355,6 +380,8 @@ footer.app-footer{text-align:center;padding:22px;color:var(--ink-dim);font-size:
     </div>
   </div>
   <div class="header-right">
+    <span class="mode-badge" id="modeBadge"></span>
+    <span class="conn-badge" id="connBadge"></span>
     <div class="date-pill">📅 <input type="date" id="gameDate"></div>
   </div>
 </header>
@@ -388,12 +415,12 @@ footer.app-footer{text-align:center;padding:22px;color:var(--ink-dim);font-size:
     <div class="section-head">
       <h2>Roster</h2>
       <div class="row-actions">
-        <button class="btn btn-primary btn-sm" id="btnSortPoints">Sort by Points</button>
-        <button class="btn btn-primary btn-sm" id="btnSortWL">Sort by W-L</button>
-        <span style="border-left: 1px solid var(--line); margin: 0 4px;"></span>
-        <button class="btn btn-ghost btn-sm" id="btnAllIn">Mark All In</button>
-        <button class="btn btn-ghost btn-sm" id="btnAllOut">Mark All Out</button>
-        <button class="btn btn-ghost btn-sm" id="btnReset">New Game Day</button>
+        <button class="btn btn-primary btn-sm dev-only" id="btnSortPoints">Sort by Points</button>
+        <button class="btn btn-primary btn-sm dev-only" id="btnSortWL">Sort by W-L</button>
+        <span class="dev-only" style="border-left: 1px solid var(--line); margin: 0 4px;"></span>
+        <button class="btn btn-ghost btn-sm dev-only" id="btnAllIn">Mark All In</button>
+        <button class="btn btn-ghost btn-sm dev-only" id="btnAllOut">Mark All Out</button>
+        <button class="btn btn-ghost btn-sm dev-only" id="btnReset">New Game Day</button>
       </div>
     </div>
 
@@ -412,7 +439,7 @@ footer.app-footer{text-align:center;padding:22px;color:var(--ink-dim);font-size:
       </div>
     </div>
 
-    <div class="card add-player-card card-pad">
+    <div class="card add-player-card card-pad dev-only">
       <div class="section-head" style="margin-top:0;"><h2>➕ Add Player</h2></div>
       <div class="add-player-grid">
         <div class="field">
@@ -448,11 +475,11 @@ footer.app-footer{text-align:center;padding:22px;color:var(--ink-dim);font-size:
           <span>Players: <b id="courtsPlayerCount">0</b></span>
         </div>
       </div>
-      <div class="courts-config">
+      <div class="courts-config dev-only">
         Courts
         <input type="number" id="courtCountInput" min="1" max="8" value="2">
       </div>
-      <div style="display:flex; gap: 8px;">
+      <div style="display:flex; gap: 8px;" class="dev-only">
         <button class="btn btn-adv" id="btnFinalRound" title="Generates a final round using the top 4 players by points" style="background:var(--adv); color:#fff; border:none;">🌟 Final Round</button>
         <button class="btn btn-primary" id="btnGenerate" title="Generates a new round for every court that isn't mid-match">🔄 Generate Ready Courts</button>
       </div>
@@ -522,16 +549,57 @@ footer.app-footer{text-align:center;padding:22px;color:var(--ink-dim);font-size:
 <footer class="app-footer">GG Players · Game Day Manager · data saved automatically to this device</footer>
 <div class="toast" id="toast"></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-database-compat.js"></script>
 <script>
 (function(){
 "use strict";
+
+/* ============================================================
+   ACCESS MODE (dev vs. view-only)
+   ============================================================ */
+var isDevMode = (function(){
+  try{
+    return new URLSearchParams(window.location.search).get('dev') === '1';
+  }catch(e){ return false; }
+})();
+
+/* ============================================================
+   FIREBASE (shared live game state — every device reads the same data)
+   ============================================================ */
+var firebaseConfig = {
+  apiKey: "AIzaSyC86Xx2SV1EtbknVwzcArqyToHrooeRKek",
+  authDomain: "gg-players-b75d3.firebaseapp.com",
+  databaseURL: "https://gg-players-b75d3-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "gg-players-b75d3",
+  storageBucket: "gg-players-b75d3.firebasestorage.app",
+  messagingSenderId: "860459958212",
+  appId: "1:860459958212:web:79224e81c222f60cff2e91"
+};
+var fbRef = null;
+var fbAvailable = false;
+try{
+  if(typeof firebase !== 'undefined'){
+    firebase.initializeApp(firebaseConfig);
+    fbRef = firebase.database().ref('gameday/state');
+    fbAvailable = true;
+  }
+}catch(e){ fbAvailable = false; }
+
+function setConnBadge(status){
+  var el = $('#connBadge');
+  if(!el) return;
+  if(status === 'live'){ el.textContent = '🟢 Live'; el.className = 'conn-badge live'; }
+  else if(status === 'connecting'){ el.textContent = '🟡 Connecting…'; el.className = 'conn-badge connecting'; }
+  else if(status === 'offline'){ el.textContent = '🔌 Offline (local only)'; el.className = 'conn-badge offline'; }
+  else { el.textContent = '💾 Local only'; el.className = 'conn-badge offline'; }
+}
 
 /* ============================================================
    STORAGE
    ============================================================ */
 var STORAGE_KEY = 'gg-players-gameday';
 var memoryFallback = {};
-var hasWindowStorage = (typeof window.storage !== 'undefined');
 var hasLocalStorage = (function(){
   try{
     localStorage.setItem('__gg_test__','1');
@@ -540,26 +608,18 @@ var hasLocalStorage = (function(){
   }catch(e){ return false; }
 })();
 
-async function saveState(){
+// Local cache is always kept up to date so the app renders instantly and
+// still works offline. Firebase (when available) is the shared source of
+// truth that keeps every device's screen in sync in real time.
+function cacheLocalState(){
   var payload = JSON.stringify(state);
-  if(hasWindowStorage){
-    try{ await window.storage.set(STORAGE_KEY, payload, false); return; }
-    catch(e){ }
-  }
   if(hasLocalStorage){
-    try{ localStorage.setItem(STORAGE_KEY, payload); return; }
-    catch(e){ }
+    try{ localStorage.setItem(STORAGE_KEY, payload); return; }catch(e){ }
   }
   memoryFallback[STORAGE_KEY] = payload;
 }
 
-async function loadState(){
-  if(hasWindowStorage){
-    try{
-      var res = await window.storage.get(STORAGE_KEY, false);
-      if(res && res.value) return JSON.parse(res.value);
-    }catch(e){ }
-  }
+function loadLocalState(){
   if(hasLocalStorage){
     try{
       var raw = localStorage.getItem(STORAGE_KEY);
@@ -568,6 +628,28 @@ async function loadState(){
   }
   var mem = memoryFallback[STORAGE_KEY];
   return mem ? JSON.parse(mem) : null;
+}
+
+async function saveState(){
+  cacheLocalState();
+  if(fbAvailable && isDevMode){
+    try{
+      // round-trip through JSON to strip undefined values Firebase can't store
+      await fbRef.set(JSON.parse(JSON.stringify(state)));
+    }catch(e){
+      console.error('Firebase sync failed — saved locally only', e);
+      toast('⚠ Could not sync to the shared game — check your connection');
+    }
+  }
+}
+
+function normalizeState(){
+  if(!state.gameHistory) state.gameHistory = [];
+  if(!state.sortMode) state.sortMode = 'points';
+  state.players.forEach(function(p){
+    if(typeof p.playingToday === 'undefined') p.playingToday = true;
+    if(typeof p.points === 'undefined') p.points = 0;
+  });
 }
 
 /* ============================================================
@@ -679,6 +761,7 @@ $all('.tab-btn').forEach(function(btn){
    PLAYERS TAB
    ============================================================ */
 $('#btnAddPlayer').addEventListener('click', async function(){
+  if(!isDevMode) return;
   var name = $('#newName').value.trim();
   if(!name){ toast('Enter a player name first'); return; }
 
@@ -724,6 +807,7 @@ $('#newName').addEventListener('keydown', function(e){
 });
 
 $('#btnReset').addEventListener('click', async function(){
+  if(!isDevMode) return;
   if(!confirm('Start a new game day? This clears scores, rotation history, and payment status — but keeps your player roster so you can just pick who\'s playing today.')) return;
   state.gameDate = new Date().toISOString().slice(0,10);
   state.courts = [];
@@ -750,6 +834,7 @@ $('#btnReset').addEventListener('click', async function(){
 });
 
 $('#btnAllIn').addEventListener('click', async function(){
+  if(!isDevMode) return;
   state.players.forEach(function(p){ p.playingToday = true; });
   await persist();
   renderAll();
@@ -757,6 +842,7 @@ $('#btnAllIn').addEventListener('click', async function(){
 });
 
 $('#btnAllOut').addEventListener('click', async function(){
+  if(!isDevMode) return;
   state.players.forEach(function(p){ p.playingToday = false; });
   await persist();
   renderAll();
@@ -764,6 +850,7 @@ $('#btnAllOut').addEventListener('click', async function(){
 });
 
 $('#btnSortPoints').addEventListener('click', async function(){
+  if(!isDevMode) return;
   state.sortMode = 'points';
   await persist();
   renderAll();
@@ -771,6 +858,7 @@ $('#btnSortPoints').addEventListener('click', async function(){
 });
 
 $('#btnSortWL').addEventListener('click', async function(){
+  if(!isDevMode) return;
   state.sortMode = 'wl';
   await persist();
   renderAll();
@@ -778,6 +866,7 @@ $('#btnSortWL').addEventListener('click', async function(){
 });
 
 $('#gameDate').addEventListener('change', async function(){
+  if(!isDevMode) return;
   state.gameDate = this.value;
   await persist();
 });
@@ -809,25 +898,34 @@ function renderPlayerTable(){
       ? '<span class="status-tag out">Not Today</span>'
       : '<span class="status-tag ' + (isPlaying ? 'playing' : 'waiting') + '">' + (isPlaying ? 'Playing' : 'Waiting') + '</span>';
     var tr = document.createElement('tr');
+    var todayCell = isDevMode
+      ? '<button class="today-toggle ' + (p.playingToday ? 'in' : 'out') + '" data-act="toggleToday" data-id="' + p.id + '">' + (p.playingToday ? '✓ In' : 'Out') + '</button>'
+      : '<span class="today-toggle ' + (p.playingToday ? 'in' : 'out') + '" style="cursor:default;">' + (p.playingToday ? '✓ In' : 'Out') + '</span>';
+    var ptsCell = isDevMode
+      ? '<div class="pts-cell">' +
+          '<button class="btn btn-pts btn-ghost" data-act="ptsDown" data-id="' + p.id + '">−</button>' +
+          '<span class="pts-num">' + (p.points||0) + '</span>' +
+          '<button class="btn btn-pts btn-ghost" data-act="ptsUp" data-id="' + p.id + '">+</button>' +
+        '</div>'
+      : '<div class="pts-cell"><span class="pts-num">' + (p.points||0) + '</span></div>';
+    var actionsCell = isDevMode
+      ? '<div class="row-actions">' +
+          '<button class="btn btn-sm" data-act="edit" data-id="' + p.id + '">Edit</button>' +
+          '<button class="btn btn-sm btn-win" data-act="win" data-id="' + p.id + '">+ Win</button>' +
+          '<button class="btn btn-sm btn-loss" data-act="loss" data-id="' + p.id + '">+ Loss</button>' +
+          '<button class="btn btn-sm btn-ghost" data-act="remove" data-id="' + p.id + '">Remove</button>' +
+        '</div>'
+      : '<span style="color:var(--ink-dim);font-size:12px;">—</span>';
     tr.innerHTML =
       '<td><div class="player-name" data-editname="' + p.id + '">' +
         '<span class="pname-text">' + escapeHtml(p.name) + '</span>' +
       '</div></td>' +
-      '<td><div class="pts-cell">' +
-        '<button class="btn btn-pts btn-ghost" data-act="ptsDown" data-id="' + p.id + '">−</button>' +
-        '<span class="pts-num">' + (p.points||0) + '</span>' +
-        '<button class="btn btn-pts btn-ghost" data-act="ptsUp" data-id="' + p.id + '">+</button>' +
-      '</div></td>' +
-      '<td><button class="today-toggle ' + (p.playingToday ? 'in' : 'out') + '" data-act="toggleToday" data-id="' + p.id + '">' + (p.playingToday ? '✓ In' : 'Out') + '</button></td>' +
+      '<td>' + ptsCell + '</td>' +
+      '<td>' + todayCell + '</td>' +
       '<td>' + statusHtml + '</td>' +
       '<td class="wl"><span class="w">' + p.wins + '</span> – <span class="l">' + p.losses + '</span></td>' +
       '<td class="mono">' + p.gamesPlayed + '</td>' +
-      '<td><div class="row-actions">' +
-        '<button class="btn btn-sm" data-act="edit" data-id="' + p.id + '">Edit</button>' +
-        '<button class="btn btn-sm btn-win" data-act="win" data-id="' + p.id + '">+ Win</button>' +
-        '<button class="btn btn-sm btn-loss" data-act="loss" data-id="' + p.id + '">+ Loss</button>' +
-        '<button class="btn btn-sm btn-ghost" data-act="remove" data-id="' + p.id + '">Remove</button>' +
-      '</div></td>';
+      '<td>' + actionsCell + '</td>';
     tbody.appendChild(tr);
   });
 }
@@ -839,6 +937,7 @@ function escapeHtml(s){
 }
 
 $('#playerTbody').addEventListener('click', async function(e){
+  if(!isDevMode) return;
   var btn = e.target.closest('button[data-act]');
   if(!btn) return;
   var id = parseInt(btn.dataset.id, 10);
@@ -870,6 +969,7 @@ $('#playerTbody').addEventListener('click', async function(e){
    COURT ROTATION TAB
    ============================================================ */
 $('#courtCountInput').addEventListener('change', async function(){
+  if(!isDevMode) return;
   var v = parseInt(this.value, 10);
   if(!v || v < 1) v = 1;
   if(v > 8) v = 8;
@@ -981,6 +1081,7 @@ function generateForCourt(courtIdx){
 }
 
 $('#btnFinalRound').addEventListener('click', async function(){
+  if(!isDevMode) return;
   var todayPlayers = state.players.filter(function(p){ return p.playingToday; });
   if(todayPlayers.length < 4){ toast('Need at least 4 players playing today for a final round.'); return; }
   
@@ -1049,6 +1150,7 @@ function pairScore(teamA, teamB){
 }
 
 $('#btnGenerate').addEventListener('click', async function(){
+  if(!isDevMode) return;
   var readyIdx = [];
   state.courts.forEach(function(c, i){
     if(c.round === 0 || c.submitted) readyIdx.push(i);
@@ -1077,9 +1179,11 @@ function renderCourts(){
 
       var bodyHtml;
       if(!hasMatch){
-        bodyHtml =
-          '<div class="court-empty">This court hasn\'t started yet.</div>' +
-          '<button class="btn btn-primary btn-block" data-act="gen" data-court="' + idx + '">▶ Generate Round 1</button>';
+        bodyHtml = isDevMode
+          ? '<div class="court-empty">This court hasn\'t started yet.</div>' +
+            '<button class="btn btn-primary btn-block" data-act="gen" data-court="' + idx + '">▶ Generate Round 1</button>'
+          : '<div class="court-empty">This court hasn\'t started yet.</div>' +
+            '<div class="view-note">Waiting for the organizer to start this court.</div>';
       } else {
         bodyHtml =
           teamLabelHtml('A') + teamRowHtml(teamA) +
@@ -1088,14 +1192,18 @@ function renderCourts(){
           '<div class="net-line"></div>' +
           (court.submitted
             ? '<div style="text-align:center;margin-bottom:10px;"><div class="submitted-tag">Submitted — Team ' + (court.scoreA > court.scoreB ? 'A' : 'B') + ' won</div></div>' +
-              '<div style="display:flex; gap: 8px;">' +
-                '<button class="btn btn-primary" style="flex:1" data-act="gen" data-court="' + idx + '">🔄 Generate Next Round</button>' +
-                '<button class="btn btn-ghost" data-act="undo" data-court="' + idx + '">Undo</button>' +
-              '</div>'
-            : '<div class="win-row">' +
-                '<button class="btn btn-win btn-block" data-act="winA" data-court="' + idx + '">🏆 Team A Won</button>' +
-                '<button class="btn btn-win btn-block" data-act="winB" data-court="' + idx + '">🏆 Team B Won</button>' +
-              '</div>'
+              (isDevMode
+                ? '<div style="display:flex; gap: 8px;">' +
+                    '<button class="btn btn-primary" style="flex:1" data-act="gen" data-court="' + idx + '">🔄 Generate Next Round</button>' +
+                    '<button class="btn btn-ghost" data-act="undo" data-court="' + idx + '">Undo</button>' +
+                  '</div>'
+                : '')
+            : (isDevMode
+                ? '<div class="win-row">' +
+                    '<button class="btn btn-win btn-block" data-act="winA" data-court="' + idx + '">🏆 Team A Won</button>' +
+                    '<button class="btn btn-win btn-block" data-act="winB" data-court="' + idx + '">🏆 Team B Won</button>' +
+                  '</div>'
+                : '<div class="view-note">Match in progress — waiting for a result.</div>')
           ) +
           '<button class="btn btn-ghost btn-sm btn-block" data-act="why" data-court="' + idx + '" style="margin-top:8px;">Why this matchup?</button>' +
           '<div class="why-box" id="why-' + idx + '"><ul>' + court.reasons.map(function(r){return '<li>'+escapeHtml(r)+'</li>';}).join('') + '</ul></div>';
@@ -1142,6 +1250,7 @@ $('#courtsGrid').addEventListener('click', async function(e){
     box.classList.toggle('open');
     return;
   }
+  if(!isDevMode) return;
   var undoBtn = e.target.closest('button[data-act="undo"]');
   if(undoBtn){
     var uIdx = parseInt(undoBtn.dataset.court, 10);
@@ -1255,10 +1364,11 @@ function teamLabelHtml(letter){
 /* ============================================================
    PAYMENT TAB
    ============================================================ */
-$('#payHours').addEventListener('input', async function(){ state.payHours = parseFloat(this.value)||0; await persist(); renderPayment(); });
-$('#payRate').addEventListener('input', async function(){ state.payRate = parseFloat(this.value)||0; await persist(); renderPayment(); });
+$('#payHours').addEventListener('input', async function(){ if(!isDevMode) return; state.payHours = parseFloat(this.value)||0; await persist(); renderPayment(); });
+$('#payRate').addEventListener('input', async function(){ if(!isDevMode) return; state.payRate = parseFloat(this.value)||0; await persist(); renderPayment(); });
 
 $('#methodRadios').addEventListener('click', async function(e){
+  if(!isDevMode) return;
   var label = e.target.closest('label[data-method]');
   if(!label) return;
   state.payMethod = label.dataset.method;
@@ -1305,8 +1415,14 @@ function renderPayment(){
     if(isPaid) paidSum += amt; else dueSum += amt;
 
     var amountCell = state.payMethod === 'custom'
-      ? '<input type="number" class="custom-amt" data-id="' + p.id + '" value="' + (state.customAmounts[p.id] != null ? state.customAmounts[p.id] : 0) + '" min="0" step="10">'
+      ? (isDevMode
+          ? '<input type="number" class="custom-amt" data-id="' + p.id + '" value="' + (state.customAmounts[p.id] != null ? state.customAmounts[p.id] : 0) + '" min="0" step="10">'
+          : fmtPeso(state.customAmounts[p.id] != null ? state.customAmounts[p.id] : 0))
       : fmtPeso(amt);
+
+    var statusCell = isDevMode
+      ? '<button class="pill-toggle ' + (isPaid ? 'paid' : 'unpaid') + '" data-id="' + p.id + '">' + (isPaid ? 'Paid' : 'Unpaid') + '</button>'
+      : '<span class="readonly-tag ' + (isPaid ? 'paid' : 'unpaid') + '">' + (isPaid ? 'Paid' : 'Unpaid') + '</span>';
 
     var tr = document.createElement('tr');
     tr.innerHTML =
@@ -1314,7 +1430,7 @@ function renderPayment(){
       '<td class="mono">' + p.gamesPlayed + '</td>' +
       '<td class="mono">' + est.toFixed(1) + 'h</td>' +
       '<td class="amount-cell">' + amountCell + '</td>' +
-      '<td><button class="pill-toggle ' + (isPaid ? 'paid' : 'unpaid') + '" data-id="' + p.id + '">' + (isPaid ? 'Paid' : 'Unpaid') + '</button></td>';
+      '<td>' + statusCell + '</td>';
     tbody.appendChild(tr);
   });
 
@@ -1324,6 +1440,7 @@ function renderPayment(){
 }
 
 $('#payTbody').addEventListener('click', async function(e){
+  if(!isDevMode) return;
   var pill = e.target.closest('.pill-toggle');
   if(!pill) return;
   var id = parseInt(pill.dataset.id, 10);
@@ -1333,6 +1450,7 @@ $('#payTbody').addEventListener('click', async function(e){
 });
 
 $('#payTbody').addEventListener('input', async function(e){
+  if(!isDevMode) return;
   var inp = e.target.closest('.custom-amt');
   if(!inp) return;
   var id = parseInt(inp.dataset.id, 10);
@@ -1418,19 +1536,55 @@ function renderAll(){
 }
 
 async function boot(){
-  var saved = await loadState();
-  if(saved){
-    state = Object.assign(defaultState(), saved);
-    if (!state.gameHistory) state.gameHistory = [];
-    if (!state.sortMode) state.sortMode = 'points';
-  }
-  state.players.forEach(function(p){
-    if(typeof p.playingToday === 'undefined') p.playingToday = true;
-    if(typeof p.points === 'undefined') p.points = 0;
+  document.body.classList.toggle('dev-mode', isDevMode);
+  document.body.classList.toggle('view-only', !isDevMode);
+  var badge = $('#modeBadge');
+  badge.textContent = isDevMode ? '🛠 Dev Mode' : '👁 View Only';
+  badge.className = 'mode-badge ' + (isDevMode ? 'dev' : 'view');
+
+  // config inputs stay visible for context, but are read-only outside dev mode
+  ['#gameDate', '#courtCountInput', '#payHours', '#payRate'].forEach(function(sel){
+    var el = $(sel);
+    if(el) el.disabled = !isDevMode;
   });
+
+  // render instantly from whatever's cached on this device (works offline too)
+  var local = loadLocalState();
+  if(local){
+    state = Object.assign(defaultState(), local);
+    normalizeState();
+  }
   ensureCourts();
   $('#gameDate').value = state.gameDate || new Date().toISOString().slice(0,10);
   renderAll();
+
+  if(!fbAvailable){
+    setConnBadge('local');
+    return;
+  }
+
+  setConnBadge('connecting');
+  firebase.database().ref('.info/connected').on('value', function(snap){
+    setConnBadge(snap.val() ? 'live' : 'offline');
+  });
+
+  fbRef.on('value', function(snapshot){
+    var val = snapshot.val();
+    if(val){
+      state = Object.assign(defaultState(), val);
+      normalizeState();
+      ensureCourts();
+      $('#gameDate').value = state.gameDate || new Date().toISOString().slice(0,10);
+      cacheLocalState();
+      renderAll();
+    } else if(isDevMode){
+      // nothing on the shared database yet — seed it with what's on this device
+      fbRef.set(JSON.parse(JSON.stringify(state))).catch(function(){});
+    }
+  }, function(err){
+    console.error('Firebase read failed', err);
+    setConnBadge('offline');
+  });
 }
 
 boot();

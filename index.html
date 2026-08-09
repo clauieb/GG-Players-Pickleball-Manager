@@ -644,11 +644,23 @@ async function saveState(){
 }
 
 function normalizeState(){
+  // Firebase Realtime Database silently drops empty objects/arrays on write
+  // (e.g. an untouched player's partners:{} or courts:[] just vanishes), so
+  // every read has to defensively restore them or downstream code throws.
   if(!state.gameHistory) state.gameHistory = [];
   if(!state.sortMode) state.sortMode = 'points';
+  if(!state.customAmounts) state.customAmounts = {};
+  if(!state.paidStatus) state.paidStatus = {};
+  if(!state.courts) state.courts = [];
   state.players.forEach(function(p){
     if(typeof p.playingToday === 'undefined') p.playingToday = true;
     if(typeof p.points === 'undefined') p.points = 0;
+    if(!p.partners) p.partners = {};
+  });
+  state.courts.forEach(function(c){
+    if(!c.teamA) c.teamA = [];
+    if(!c.teamB) c.teamB = [];
+    if(!c.reasons) c.reasons = [];
   });
 }
 

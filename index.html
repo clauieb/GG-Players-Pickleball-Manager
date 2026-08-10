@@ -1044,12 +1044,15 @@ function generateForCourt(courtIdx){
   // free right now (not mid-match on another court).
   var notPlayed = activePlayers.filter(function(p){ return !p.playedThisCycle && !lockedIds[p.id]; });
 
-  // If fewer than 4 players remain unplayed this cycle, that cycle is
+ // If fewer than 4 players remain unplayed this cycle, that cycle is
   // considered complete enough — start a new cycle so those leftover
   // players roll forward and get grouped with everyone else by points.
   if(notPlayed.length < 4){
     state.cycleNumber = (state.cycleNumber || 1) + 1;
-    activePlayers.forEach(function(p){ p.playedThisCycle = false; });
+    activePlayers.forEach(function(p){ 
+      p.playedThisCycle = false; 
+      p.lateJoin = false; // <-- ADD THIS LINE TO FIX THE BUG
+    });
     notPlayed = activePlayers.filter(function(p){ return !p.playedThisCycle && !lockedIds[p.id]; });
   }
 

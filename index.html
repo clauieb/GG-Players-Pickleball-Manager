@@ -386,6 +386,16 @@ footer.app-footer{text-align:center;padding:22px;color:var(--ink-dim);font-size:
   .add-player-grid{grid-template-columns:1fr 1fr;}
   .pay-config{grid-template-columns:1fr;}
 }
+
+.timer-alarm-active .court-timer,
+.timer-alarm-active .court-timer-display{
+  animation: timerAlarmPulse .55s infinite alternate;
+}
+@keyframes timerAlarmPulse{
+  from { transform: scale(1); opacity: 1; }
+  to { transform: scale(1.05); opacity: .72; }
+}
+
 </style>
 </head>
 <body>
@@ -1294,6 +1304,7 @@ function getTimerRemaining(court){
 }
 
 var timerAudioCtx = null;
+var timerAlarmInterval = null;
 
 function getTimerAudioContext(){
   try {
@@ -1310,18 +1321,42 @@ function playTimerAlarm(){
     var ctx = getTimerAudioContext();
     if(!ctx) return;
     var now = ctx.currentTime;
-    [0,0.24,0.48].forEach(function(offset){
-      var osc = ctx.createOscillator();
-      var gain = ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.value = 880;
-      gain.gain.setValueAtTime(0.0001, now + offset);
-      gain.gain.exponentialRampToValueAtTime(0.35, now + offset + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.20);
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.start(now + offset); osc.stop(now + offset + 0.22);
-    });
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(980, now);
+    osc.frequency.setValueAtTime(760, now + 0.22);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.65, now + 0.025);
+    gain.gain.setValueAtTime(0.65, now + 0.18);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.38);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.40);
   } catch(e) { console.warn('Timer alarm failed', e); }
+}
+
+function startTimerAlarm(){
+  stopTimerAlarm();
+  if(!getTimerAudioContext()) return;
+  playTimerAlarm();
+  timerAlarmInterval = setInterval(playTimerAlarm, 700);
+  document.body.classList.add('timer-alarm-active');
+}
+
+function stopTimerAlarm(){
+  if(timerAlarmInterval){
+    clearInterval(timerAlarmInterval);
+    timerAlarmInterval = null;
+  }
+  document.body.classList.remove('timer-alarm-active');
+  $all('[data-court-timer]').forEach(function(box){
+    box.classList.remove('expired');
+  });
 }
 
 function testTimerAlarm(idx){
@@ -1330,12 +1365,10 @@ function testTimerAlarm(idx){
     alert('Your browser does not support the timer alarm audio.');
     return;
   }
-  playTimerAlarm();
-  var box = document.querySelector('[data-court-timer=\"' + idx + '\"]');
-  if(box){
+  startTimerAlarm();
+  $all('[data-court-timer]').forEach(function(box){
     box.classList.add('expired');
-    setTimeout(function(){ box.classList.remove('expired'); }, 1800);
-  }
+  });
 }
 
 async function startCourtTimer(idx){
@@ -1377,7 +1410,7 @@ async function updateCourtTimers(){
       court.timerUpdatedAt = null;
       if(!court.timerAlerted){
         court.timerAlerted = true;
-        playTimerAlarm();
+        startTimerAlarm();
         changed = true;
       }
     }
@@ -1436,7 +1469,8 @@ function renderCourts(){
             (isDevMode && !court.submitted ? '<div class="court-timer-actions">' +
               '<button class="btn btn-primary" data-timer-act="start" data-court="' + idx + '"' + (court.timerRunning ? ' disabled' : '') + '>▶ Start</button>' +
               '<button class="btn btn-ghost" data-timer-act="pause" data-court="' + idx + '"' + (!court.timerRunning ? ' disabled' : '') + '>⏸ Pause</button>' +
-              '<button class="btn btn-ghost" data-timer-act="test" data-court="' + idx + '">🔔 Test Alarm</button>' +
+              '<button class="btn btn-ghost" data-timer-act="test" data-court="' + idx + '">🔔 Test Alarm</button> +
+              '<button class="btn btn-danger" data-timer-act="stop-alarm" data-court="' + idx + '">⏹ Stop Alarm</button>' +
             '</div>' : '') +
           '</div>' +
           (court.submitted

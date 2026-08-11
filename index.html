@@ -1293,25 +1293,49 @@ function getTimerRemaining(court){
   return Math.max(0, remaining);
 }
 
-function playTimerAlarm(){
+var timerAudioCtx = null;
+
+function getTimerAudioContext(){
   try {
     var Ctx = window.AudioContext || window.webkitAudioContext;
-    if(!Ctx) return;
-    var ctx = new Ctx();
+    if(!Ctx) return null;
+    if(!timerAudioCtx) timerAudioCtx = new Ctx();
+    if(timerAudioCtx.state === 'suspended') timerAudioCtx.resume();
+    return timerAudioCtx;
+  } catch(e) { return null; }
+}
+
+function playTimerAlarm(){
+  try {
+    var ctx = getTimerAudioContext();
+    if(!ctx) return;
     var now = ctx.currentTime;
-    [0,0.22,0.44].forEach(function(offset){
+    [0,0.24,0.48].forEach(function(offset){
       var osc = ctx.createOscillator();
       var gain = ctx.createGain();
-      osc.type = 'sine';
+      osc.type = 'square';
       osc.frequency.value = 880;
       gain.gain.setValueAtTime(0.0001, now + offset);
-      gain.gain.exponentialRampToValueAtTime(0.22, now + offset + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.18);
+      gain.gain.exponentialRampToValueAtTime(0.35, now + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.20);
       osc.connect(gain); gain.connect(ctx.destination);
-      osc.start(now + offset); osc.stop(now + offset + 0.2);
+      osc.start(now + offset); osc.stop(now + offset + 0.22);
     });
-    setTimeout(function(){ try{ctx.close();}catch(e){} }, 1000);
-  } catch(e) {}
+  } catch(e) { console.warn('Timer alarm failed', e); }
+}
+
+function testTimerAlarm(idx){
+  var ctx = getTimerAudioContext();
+  if(!ctx){
+    alert('Your browser does not support the timer alarm audio.');
+    return;
+  }
+  playTimerAlarm();
+  var box = document.querySelector('[data-court-timer=\"' + idx + '\"]');
+  if(box){
+    box.classList.add('expired');
+    setTimeout(function(){ box.classList.remove('expired'); }, 1800);
+  }
 }
 
 async function startCourtTimer(idx){
@@ -1412,6 +1436,7 @@ function renderCourts(){
             (isDevMode && !court.submitted ? '<div class="court-timer-actions">' +
               '<button class="btn btn-primary" data-timer-act="start" data-court="' + idx + '"' + (court.timerRunning ? ' disabled' : '') + '>▶ Start</button>' +
               '<button class="btn btn-ghost" data-timer-act="pause" data-court="' + idx + '"' + (!court.timerRunning ? ' disabled' : '') + '>⏸ Pause</button>' +
+              '<button class="btn btn-ghost" data-timer-act="test" data-court="' + idx + '">🔔 Test Alarm</button>' +
             '</div>' : '') +
           '</div>' +
           (court.submitted
@@ -1503,6 +1528,11 @@ $('#courtsGrid').addEventListener('click', async function(e){
   var pauseTimerBtn = e.target.closest('button[data-timer-act="pause"]');
   if(pauseTimerBtn){
     await pauseCourtTimer(parseInt(pauseTimerBtn.dataset.court,10));
+    return;
+  }
+  var testTimerBtn = e.target.closest('button[data-timer-act="test"]');
+  if(testTimerBtn){
+    testTimerAlarm(parseInt(testTimerBtn.dataset.court,10));
     return;
   }
   var winABtn = e.target.closest('button[data-act="winA"]');

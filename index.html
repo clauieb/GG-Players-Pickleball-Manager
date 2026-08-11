@@ -349,6 +349,16 @@ input.custom-amt{width:90px;border:1px solid var(--line);border-radius:6px;paddi
 .leaderboard-item.rank-1{border-color:#e9c65b;background:linear-gradient(180deg,#fff8e6,#fffdf7);}
 .leaderboard-item.rank-2{border-color:#c7ccd6;background:linear-gradient(180deg,#f5f6f9,#fff);}
 .leaderboard-item.rank-3{border-color:#dba97a;background:linear-gradient(180deg,#fdf2e7,#fff);}
+
+.day-status{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fff;}
+.day-status.ended{border-color:#c7ccd6;background:#f7f8fa;}
+.day-status .status-text{font-size:12px;color:var(--ink-dim);}
+.final-results{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px;}
+.final-result-card{border:1px solid var(--line);border-radius:14px;padding:16px;background:#fff;display:flex;align-items:center;gap:12px;}
+.final-result-card .medal{font-size:28px;}
+.final-result-card .rank-name{font-weight:800;font-size:14px;}
+.final-result-card .rank-stats{font-family:'Space Mono',monospace;font-size:11px;color:var(--ink-dim);margin-top:3px;}
+@media(max-width:700px){.final-results{grid-template-columns:1fr;}}
 @media(max-width:700px){.leaderboard-row{grid-template-columns:1fr;}}
 
 .empty-state{text-align:center;padding:60px 20px;color:var(--ink-dim);}
@@ -402,6 +412,23 @@ footer.app-footer{text-align:center;padding:22px;color:var(--ink-dim);font-size:
       <div class="summary-card accent-win"><div class="num" id="sumActive">0</div><div class="label">Active</div></div>
       <div class="summary-card accent-wait"><div class="num" id="sumWaiting">0</div><div class="label">Waiting</div></div>
       <div class="summary-card accent-blue"><div class="num" id="sumCourts">2</div><div class="label">Courts</div></div>
+    </div>
+
+    <div class="day-status" id="dayStatus">
+      <div>
+        <div class="display" id="dayStatusTitle" style="font-size:16px;">🎾 Game Day In Progress</div>
+        <div class="status-text" id="dayStatusText">Results are still being recorded.</div>
+      </div>
+      <div class="row-actions dev-only">
+        <button class="btn btn-primary" id="btnEndDay">🏁 End Game Day</button>
+        <button class="btn btn-ghost" id="btnReopenDay" style="display:none;">↩ Reopen</button>
+      </div>
+    </div>
+
+    <div class="card leaderboard-card card-pad" id="finalResultsCard" style="display:none;">
+      <div class="section-head" style="margin:0 0 12px;"><h2 style="font-size:15px;">🏆 Final Game Day Results</h2></div>
+      <div class="final-results" id="finalResultsRow"></div>
+      <div id="finalStandingsList"></div>
     </div>
 
     <div class="card leaderboard-card card-pad" id="leaderboardCard">
@@ -652,9 +679,13 @@ function normalizeState(){
   if(!state.customAmounts) state.customAmounts = {};
   if(!state.paidStatus) state.paidStatus = {};
   if(!state.courts) state.courts = [];
+  if(typeof state.dayEnded === 'undefined') state.dayEnded = false;
+  if(!state.finalStandings) state.finalStandings = [];
+  if(!state.dayEnded) state.finalStandings = [];
   state.players.forEach(function(p){
     if(typeof p.playingToday === 'undefined') p.playingToday = true;
     if(typeof p.points === 'undefined') p.points = 0;
+    if(typeof p.pointDiff === 'undefined') p.pointDiff = 0;
     if(!p.partners) p.partners = {};
   });
   state.courts.forEach(function(c){
@@ -699,12 +730,11 @@ function makePlayer(id, name, w, l, pts){
     losses: l || 0,
     points: pts || 0,
     gamesPlayed: (w||0) + (l||0),
+    pointDiff: 0,
     partners: {},
     waitingRounds: 0,
     status: 'waiting',
-    playingToday: true,
-    playedThisCycle: false,
-    lateJoin: false
+    playingToday: true
   };
 }
 
@@ -723,14 +753,16 @@ function defaultState(){
     nextId: seeded.length + 1,
     courtCount: 2,
     courts: [],          
-    cycleNumber: 1,
     gameHistory: [], // matches for game history
     sortMode: 'points', // points or wl
     payHours: 2,
     payRate: 500,
     payMethod: 'equal',
     customAmounts: {},   
-    paidStatus: {}        
+    paidStatus: {},
+    dayEnded: false,
+    finalStandings: [],
+    endedAt: null
   };
 }
 
@@ -783,26 +815,31 @@ $('#btnAddPlayer').addEventListener('click', async function(){
   var w = parseInt($('#newW').value, 10) || 0;
   var l = parseInt($('#newL').value, 10) || 0;
   var pts = parseInt($('#newPoints').value, 10) || 0;
-
-  // If rounds are already underway, this player joins at the back of the
-  // current rotation cycle — they are NOT fast-tracked to "catch up" on
-  // games played, and they won't be picked for a court until everyone
-  // already in this cycle has played once.
+  
+  // Calculate baseline games if they are joining late (and didn't manually set W/L)
+  var gamesBaseline = w + l;
   var matchesStarted = state.courts.some(function(c) { return (c.round || 0) > 0; });
-
+  
+  if (gamesBaseline === 0 && matchesStarted) {
+      var activePlayers = state.players.filter(function(p) { return p.playingToday; });
+      if (activePlayers.length > 0) {
+          var totalGames = activePlayers.reduce(function(sum, p) { return sum + p.gamesPlayed; }, 0);
+          // Set their gamesPlayed to the group average so they don't get priority
+          gamesBaseline = Math.floor(totalGames / activePlayers.length); 
+      }
+  }
   state.players.push({
     id: state.nextId++,
     name: name,
     wins: w,
     losses: l,
     points: pts,
-    gamesPlayed: w + l,
+    gamesPlayed: gamesBaseline,
+    pointDiff: 0,
     partners: {},          
     waitingRounds: 0,
     status: 'waiting',
-    playingToday: true,
-    playedThisCycle: false,
-    lateJoin: matchesStarted
+    playingToday: true
   });
   $('#newName').value = '';
   $('#newW').value = 0;
@@ -817,13 +854,56 @@ $('#newName').addEventListener('keydown', function(e){
   if(e.key === 'Enter') $('#btnAddPlayer').click();
 });
 
+function calculateFinalStandings(){
+  return state.players.filter(function(p){ return p.playingToday || (p.gamesPlayed||0) > 0; }).slice().sort(function(a,b){
+    var aw = a.wins||0, bw = b.wins||0;
+    if(bw !== aw) return bw-aw;
+    var ag = a.gamesPlayed||0, bg = b.gamesPlayed||0;
+    var ar = ag ? aw/ag : 0, br = bg ? bw/bg : 0;
+    if(br !== ar) return br-ar;
+    var ad = (a.pointDiff||0), bd = (b.pointDiff||0);
+    if(bd !== ad) return bd-ad;
+    var ap = a.points||0, bp = b.points||0;
+    if(bp !== ap) return bp-ap;
+    return a.name.localeCompare(b.name);
+  }).map(function(p, i){
+    return {rank:i+1, playerId:p.id, name:p.name, wins:p.wins||0, losses:p.losses||0, games:p.gamesPlayed||0, winPct:(p.gamesPlayed ? (p.wins||0)/p.gamesPlayed : 0)};
+  });
+}
+
+function endGameDay(){
+  if(!isDevMode || state.dayEnded) return;
+  var unfinished = state.courts.some(function(c){ return (c.round||0) > 0 && !c.submitted; });
+  if(unfinished){
+    if(!confirm('There are unfinished matches. End the game day anyway? Unfinished matches will not count.')) return;
+  } else if(!confirm('End Game Day? This will finalize the standings and lock scoring for today.')) return;
+  state.finalStandings = calculateFinalStandings();
+  state.dayEnded = true;
+  state.endedAt = new Date().toISOString();
+  persist().then(function(){ renderAll(); toast('🏁 Game Day ended — standings finalized'); });
+}
+
+function reopenGameDay(){
+  if(!isDevMode || !state.dayEnded) return;
+  if(!confirm('Reopen this Game Day? Final standings will become live again.')) return;
+  state.dayEnded = false;
+  state.finalStandings = [];
+  state.endedAt = null;
+  persist().then(function(){ renderAll(); toast('Game Day reopened'); });
+}
+
+$('#btnEndDay').addEventListener('click', endGameDay);
+$('#btnReopenDay').addEventListener('click', reopenGameDay);
+
 $('#btnReset').addEventListener('click', async function(){
   if(!isDevMode) return;
   if(!confirm('Start a new game day? This clears scores, rotation history, and payment status — but keeps your player roster so you can just pick who\'s playing today.')) return;
   state.gameDate = new Date().toISOString().slice(0,10);
   state.courts = [];
-  state.cycleNumber = 1;
   state.gameHistory = [];
+  state.dayEnded = false;
+  state.finalStandings = [];
+  state.endedAt = null;
   state.payHours = 2;
   state.payRate = 500;
   state.payMethod = 'equal';
@@ -834,11 +914,10 @@ $('#btnReset').addEventListener('click', async function(){
     p.losses = 0;
     p.points = 0;
     p.gamesPlayed = 0;
+    p.pointDiff = 0;
     p.partners = {};
     p.waitingRounds = 0;
     p.playingToday = false;
-    p.playedThisCycle = false;
-    p.lateJoin = false;
   });
   ensureCourts();
   $('#gameDate').value = state.gameDate;
@@ -849,14 +928,7 @@ $('#btnReset').addEventListener('click', async function(){
 
 $('#btnAllIn').addEventListener('click', async function(){
   if(!isDevMode) return;
-  var matchesStarted = state.courts.some(function(c){ return (c.round || 0) > 0; });
-  state.players.forEach(function(p){
-    if(!p.playingToday && matchesStarted){
-      p.playedThisCycle = false;
-      p.lateJoin = true;
-    }
-    p.playingToday = true;
-  });
+  state.players.forEach(function(p){ p.playingToday = true; });
   await persist();
   renderAll();
   toast('Everyone marked in for today');
@@ -971,11 +1043,6 @@ $('#playerTbody').addEventListener('click', async function(e){
   else if(act === 'ptsDown'){ p.points = Math.max(0, (p.points||0) - 1); }
   else if(act === 'toggleToday'){
     p.playingToday = !p.playingToday;
-    if(p.playingToday){
-      var matchesStarted = state.courts.some(function(c){ return (c.round || 0) > 0; });
-      p.playedThisCycle = false;
-      p.lateJoin = matchesStarted;
-    }
   } else if(act === 'remove'){
     if(!confirm('Remove ' + p.name + ' from the roster?')) return;
     state.players = state.players.filter(function(x){ return x.id !== id; });
@@ -1035,96 +1102,60 @@ function newEmptyCourt(){
 function generateForCourt(courtIdx){
   var court = state.courts[courtIdx];
   if(!court) return false;
-  var activePlayers = state.players.filter(function(p){ return p.playingToday; });
-  if(activePlayers.length < 4){ toast('Mark at least 4 players "In" for today first'); return false; }
+  var todayCount = state.players.filter(function(p){ return p.playingToday; }).length;
+  if(todayCount < 4){ toast('Mark at least 4 players "In" for today first'); return false; }
 
   var lockedIds = occupiedByOtherCourts(courtIdx);
-
-  // Players who haven't played yet in the current rotation cycle and are
-  // free right now (not mid-match on another court).
-  var notPlayed = activePlayers.filter(function(p){ return !p.playedThisCycle && !lockedIds[p.id]; });
-
- // If fewer than 4 players remain unplayed this cycle, that cycle is
-  // considered complete enough — start a new cycle so those leftover
-  // players roll forward and get grouped with everyone else by points.
-  if(notPlayed.length < 4){
-    state.cycleNumber = (state.cycleNumber || 1) + 1;
-    activePlayers.forEach(function(p){ 
-      p.playedThisCycle = false; 
-      p.lateJoin = false; // <-- ADD THIS LINE TO FIX THE BUG
-    });
-    notPlayed = activePlayers.filter(function(p){ return !p.playedThisCycle && !lockedIds[p.id]; });
-  }
-
-  if(notPlayed.length < 4){
+  var availablePlayers = state.players.filter(function(p){ return p.playingToday && !lockedIds[p.id]; });
+  if(availablePlayers.length < 4){
     toast('Not enough available players for Court ' + (courtIdx+1));
     return false;
   }
 
-  // Requirement: everyone must play once before anyone repeats (handled by
-  // the playedThisCycle filter above), and late joiners never jump ahead of
-  // players still waiting on their first game this cycle.
-  var primaryPool = notPlayed.filter(function(p){ return !p.lateJoin; });
-  var candidatePool = primaryPool.length >= 4 ? primaryPool : notPlayed;
-
-  // Requirement: match by points, lowest to highest. Group players into
-  // point tiers; if the lowest tier doesn't have enough players to fill a
-  // court, pull in players from the next-highest tier. If we're filling
-  // from the highest tier and it's short, pull from the next-lowest tier
-  // instead. Within a tier, whoever has waited the longest gets priority
-  // when only part of the tier can be taken, so the same player isn't
-  // repeatedly left as the odd one out.
-  var byPoints = {};
-  candidatePool.forEach(function(p){
-    var k = p.points || 0;
-    (byPoints[k] = byPoints[k] || []).push(p);
-  });
-  var tiers = Object.keys(byPoints).map(Number).sort(function(a,b){ return a - b; });
-  tiers.forEach(function(k){
-    byPoints[k].sort(function(a,b){ return (b.waitingRounds||0) - (a.waitingRounds||0); });
+  // Find a seed player (priority to longest wait/fewest games)
+  availablePlayers.sort(function(a,b){
+    if(a.waitingRounds !== b.waitingRounds) return b.waitingRounds - a.waitingRounds;
+    if(a.gamesPlayed !== b.gamesPlayed) return a.gamesPlayed - b.gamesPlayed;
+    return Math.random() - 0.5;
   });
 
-  var four = byPoints[tiers[0]].slice();
-  var lowPts = tiers[0], highPts = tiers[0];
-  var up = 1;
-  while(four.length < 4 && up < tiers.length){
-    four = four.concat(byPoints[tiers[up]]);
-    highPts = tiers[up];
-    up++;
-  }
-  if(four.length < 4){
-    // Lowest tier was also the only/highest tier available and still short —
-    // pull downward (won't normally trigger since we always start lowest,
-    // kept for symmetry with the "highest tier short" rule).
-    var down = tiers.length - 2;
-    while(four.length < 4 && down >= 0){
-      four = four.concat(byPoints[tiers[down]]);
-      down--;
+  var seedPoint = availablePlayers[0].points || 0;
+  var pool = [];
+
+  // Point matching rules
+  if (seedPoint === 0) {
+    pool = availablePlayers.filter(p => (p.points || 0) === 0);
+    if (pool.length < 4) {
+      pool = pool.concat(availablePlayers.filter(p => (p.points || 0) === 1));
+    }
+  } else if (seedPoint >= 3) {
+    pool = availablePlayers.filter(p => (p.points || 0) >= 3);
+  } else {
+    // Exact match first
+    pool = availablePlayers.filter(p => (p.points || 0) === seedPoint);
+    if (pool.length < 4) {
+      // Expand to +/- 1 points
+      var expandPool = availablePlayers.filter(p => Math.abs((p.points || 0) - seedPoint) <= 1 && (p.points || 0) !== seedPoint);
+      pool = pool.concat(expandPool);
     }
   }
-  if(four.length < 4){
-    toast('Not enough available players for Court ' + (courtIdx+1));
-    return false;
+
+  // Fallback to fill the remaining if we still don't have 4 players
+  if (pool.length < 4) {
+    var addedIds = pool.map(p => p.id);
+    var remaining = availablePlayers.filter(p => !addedIds.includes(p.id));
+    pool = pool.concat(remaining);
   }
-  four = four.slice(0, 4);
+
+  var four = pool.slice(0, 4);
   var fourIds = {};
   four.forEach(function(p){ fourIds[p.id] = true; });
+  var stillFree = availablePlayers.filter(function(p){ return !fourIds[p.id]; });
 
   var split = splitIntoTeams(four);
 
-  // Everyone still on the sidelines (not selected, not mid-match elsewhere)
-  // has their wait counter bumped for the "Waiting" display.
-  activePlayers.forEach(function(p){
-    if(fourIds[p.id]){
-      p.playedThisCycle = true;
-      p.lateJoin = false;
-      p.waitingRounds = 0;
-      p.status = 'playing';
-    } else if(!lockedIds[p.id]){
-      p.waitingRounds++;
-      p.status = 'waiting';
-    }
-  });
+  stillFree.forEach(function(p){ p.waitingRounds++; p.status = 'waiting'; });
+  four.forEach(function(p){ p.waitingRounds = 0; p.status = 'playing'; });
 
   court.round = (court.round || 0) + 1;
   court.teamA = split.teamA;
@@ -1133,16 +1164,17 @@ function generateForCourt(courtIdx){
   court.scoreB = '';
   court.submitted = false;
   court.matchId = null;
-
+  
   court.reasons = [];
-  court.reasons.push("Rotation cycle " + state.cycleNumber + " · points " + lowPts + (lowPts===highPts ? '' : '–' + highPts));
+  court.reasons.push("Point matching targeting " + seedPoint + " points.");
   var repeat = (four.find(p=>p.id==split.teamA[0]).partners[split.teamA[1]]||0) > 0 || (four.find(p=>p.id==split.teamB[0]).partners[split.teamB[1]]||0) > 0;
   court.reasons.push(repeat ? '⚠ Repeat teammate' : '✓ No repeated teammates');
-
+  
   return true;
 }
 
 $('#btnFinalRound').addEventListener('click', async function(){
+  if(state.dayEnded){ toast('Game Day is locked'); return; }
   if(!isDevMode) return;
   var todayPlayers = state.players.filter(function(p){ return p.playingToday; });
   if(todayPlayers.length < 4){ toast('Need at least 4 players playing today for a final round.'); return; }
@@ -1212,6 +1244,7 @@ function pairScore(teamA, teamB){
 }
 
 $('#btnGenerate').addEventListener('click', async function(){
+  if(state.dayEnded){ toast('Game Day is locked'); return; }
   if(!isDevMode) return;
   var readyIdx = [];
   state.courts.forEach(function(c, i){
@@ -1347,14 +1380,15 @@ $('#courtsGrid').addEventListener('click', async function(e){
 });
 
 function submitResult(idx, sa, sb){
+  if(state.dayEnded){ toast('Game Day is locked — reopen it in Dev mode to edit scores'); return; }
   var court = state.courts[idx];
   var teamA = court.teamA.map(playerById);
   var teamB = court.teamB.map(playerById);
   var winners = sa > sb ? teamA : teamB;
   var losers = sa > sb ? teamB : teamA;
   
-  winners.forEach(function(p){ p.wins++; p.gamesPlayed++; p.points = (p.points||0) + 1; });
-  losers.forEach(function(p){ p.losses++; p.gamesPlayed++; });
+  winners.forEach(function(p){ p.wins++; p.gamesPlayed++; p.points = (p.points||0) + 1; p.pointDiff = (p.pointDiff||0) + Math.abs(sa-sb); });
+  losers.forEach(function(p){ p.losses++; p.gamesPlayed++; p.pointDiff = (p.pointDiff||0) - Math.abs(sa-sb); });
   registerPartners(teamA, 1);
   registerPartners(teamB, 1);
   
@@ -1377,6 +1411,7 @@ function submitResult(idx, sa, sb){
 }
 
 function undoResult(idx){
+  if(state.dayEnded){ toast('Game Day is locked — reopen it in Dev mode to edit scores'); return; }
   var court = state.courts[idx];
   if (!court.submitted) return;
 
@@ -1387,8 +1422,8 @@ function undoResult(idx){
   var winners = sa > sb ? teamA : teamB;
   var losers = sa > sb ? teamB : teamA;
   
-  winners.forEach(function(p){ p.wins--; p.gamesPlayed--; p.points = (p.points||0) - 1; });
-  losers.forEach(function(p){ p.losses--; p.gamesPlayed--; });
+  winners.forEach(function(p){ p.wins--; p.gamesPlayed--; p.points = (p.points||0) - 1; p.pointDiff = (p.pointDiff||0) - Math.abs(sa-sb); });
+  losers.forEach(function(p){ p.losses--; p.gamesPlayed--; p.pointDiff = (p.pointDiff||0) + Math.abs(sa-sb); });
   registerPartners(teamA, -1);
   registerPartners(teamB, -1);
   
@@ -1544,47 +1579,64 @@ var MEDALS = [
 function renderLeaderboard(){
   var row = $('#leaderboardRow');
   row.innerHTML = '';
-  var totalWins = state.players.reduce(function(s,p){ return s + (p.wins||0); }, 0);
-  if(!state.players.length || totalWins === 0){
-    row.innerHTML = '<div class="leaderboard-item empty" style="grid-column:1/-1;">No wins recorded yet — play some games to populate the podium.</div>';
-    return;
-  }
-  var top3 = state.players.slice()
-    .sort(function(a,b){ return (b.wins||0) - (a.wins||0); })
-    .slice(0, 3);
-  top3.forEach(function(p, i){
-    var medal = MEDALS[i];
-    row.innerHTML +=
-      '<div class="leaderboard-item ' + medal.cls + '">' +
+  var standings = state.dayEnded && state.finalStandings && state.finalStandings.length
+    ? state.finalStandings
+    : calculateFinalStandings();
+  if(!standings.length){
+    row.innerHTML = '<div class="leaderboard-item empty" style="grid-column:1/-1;">No results recorded yet — play some games to populate the podium.</div>';
+  } else {
+    var top3 = standings.slice(0,3);
+    top3.forEach(function(s, i){
+      var medal = MEDALS[i];
+      row.innerHTML += '<div class="leaderboard-item ' + medal.cls + '">' +
         '<span class="medal">' + medal.emoji + '</span>' +
-        '<span class="lb-avatar">' + initials(p.name) + '</span>' +
+        '<span class="lb-avatar">' + initials(s.name) + '</span>' +
         '<div class="lb-info">' +
-          '<div class="lb-name">' + escapeHtml(p.name) + '</div>' +
-          '<div class="lb-wins">' + (p.wins||0) + ' win' + ((p.wins||0)===1?'':'s') + '</div>' +
-        '</div>' +
-      '</div>';
-  });
-  for(var j = top3.length; j < 3; j++){
-    row.innerHTML += '<div class="leaderboard-item empty">—</div>';
+          '<div class="lb-name">' + escapeHtml(s.name) + '</div>' +
+          '<div class="lb-wins">' + s.wins + 'W – ' + s.losses + 'L</div>' +
+        '</div></div>';
+    });
+    for(var j = top3.length; j < 3; j++) row.innerHTML += '<div class="leaderboard-item empty">—</div>';
   }
-  
-  // Render Game History
+
+  var status = $('#dayStatus'), title = $('#dayStatusTitle'), text = $('#dayStatusText');
+  var endBtn = $('#btnEndDay'), reopenBtn = $('#btnReopenDay');
+  if(state.dayEnded){
+    status.classList.add('ended'); title.textContent = '🔒 Game Day Finalized';
+    text.textContent = 'Standings are locked' + (state.endedAt ? ' • ' + new Date(state.endedAt).toLocaleString() : '') + '.';
+    if(endBtn) endBtn.style.display = 'none';
+    if(reopenBtn) reopenBtn.style.display = '';
+  } else {
+    status.classList.remove('ended'); title.textContent = '🎾 Game Day In Progress';
+    text.textContent = 'Results are still being recorded.';
+    if(endBtn) endBtn.style.display = '';
+    if(reopenBtn) reopenBtn.style.display = 'none';
+  }
+
+  var finalCard = $('#finalResultsCard');
+  var finalRow = $('#finalResultsRow');
+  var finalList = $('#finalStandingsList');
+  if(state.dayEnded && state.finalStandings && state.finalStandings.length){
+    finalCard.style.display = '';
+    finalRow.innerHTML = '';
+    state.finalStandings.slice(0,3).forEach(function(s,i){
+      finalRow.innerHTML += '<div class="final-result-card"><span class="medal">'+MEDALS[i].emoji+'</span><div><div class="rank-name">'+escapeHtml(s.name)+'</div><div class="rank-stats">'+s.wins+'W – '+s.losses+'L • '+Math.round(s.winPct*100)+'% win rate</div></div></div>';
+    });
+    finalList.innerHTML = '<div class="player-table-wrap"><table class="players"><thead><tr><th>Rank</th><th>Player</th><th>W–L</th><th>Win %</th><th>Games</th></tr></thead><tbody>' +
+      state.finalStandings.map(function(s){ return '<tr><td><b>'+s.rank+'</b></td><td><b>'+escapeHtml(s.name)+'</b></td><td><span class="w">'+s.wins+'</span> – <span class="l">'+s.losses+'</span></td><td>'+Math.round(s.winPct*100)+'%</td><td>'+s.games+'</td></tr>'; }).join('') +
+      '</tbody></table></div>';
+  } else {
+    finalCard.style.display = 'none';
+    finalRow.innerHTML = ''; finalList.innerHTML = '';
+  }
+
   var historyList = $('#gameHistoryList');
   historyList.innerHTML = '';
   if (!state.gameHistory || state.gameHistory.length === 0) {
     historyList.innerHTML = '<li style="color:var(--ink-dim); justify-content:center;">No game history available.</li>';
   } else {
-    var sortedHistory = state.gameHistory.slice().reverse(); // newest first
-    sortedHistory.forEach(function(match) {
-       historyList.innerHTML += 
-         '<li>' +
-           '<div class="history-match">' +
-             '<span class="history-team">Team A: ' + escapeHtml(match.teamA) + '</span>' +
-             '<span class="history-vs">vs</span>' +
-             '<span class="history-team">Team B: ' + escapeHtml(match.teamB) + '</span>' +
-           '</div>' +
-           '<div class="history-winner">' + match.winner + ' Won</div>' +
-         '</li>';
+    state.gameHistory.slice().reverse().forEach(function(match) {
+      historyList.innerHTML += '<li><div class="history-match"><span class="history-team">Team A: ' + escapeHtml(match.teamA) + '</span><span class="history-vs">vs</span><span class="history-team">Team B: ' + escapeHtml(match.teamB) + '</span></div><div class="history-winner">' + match.winner + ' Won</div></li>';
     });
   }
 }
@@ -1595,6 +1647,10 @@ function renderAll(){
   renderPlayerTable();
   renderCourts();
   renderPayment();
+  var locked = !!state.dayEnded;
+  ['#btnGenerate','#btnFinalRound','#courtCountInput'].forEach(function(sel){ var el=$(sel); if(el) el.disabled = locked; });
+  $all('#gameDate').forEach(function(el){ el.disabled = !isDevMode || locked; });
+  document.body.classList.toggle('day-ended', locked);
 }
 
 async function boot(){

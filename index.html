@@ -273,6 +273,14 @@ button.btn-pts{padding:3px 8px;font-size:11px;border-radius:6px;}
 }
 .win-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0 8px;}
 .court-empty{padding:34px 18px;text-align:center;color:var(--ink-dim);font-size:13px;}
+.court-timer{margin:12px 0 10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#f8fafc;text-align:center;}
+.court-timer.expired{border-color:var(--loss);background:var(--loss-bg);animation:timerPulse 1s ease-in-out 3;}
+.court-timer-display{font-family:'Space Mono',monospace;font-size:24px;font-weight:700;letter-spacing:.04em;}
+.court-timer-label{font-size:11px;color:var(--ink-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;}
+.court-timer-actions{display:flex;gap:8px;margin-top:8px;}
+.court-timer-actions .btn{flex:1;}
+@keyframes timerPulse{50%{transform:scale(1.02);}}
+
 .why-box{
   margin-top:12px;background:var(--court-blue-dim);border:1px solid #cfe0fb;border-radius:10px;padding:10px 12px;font-size:12.5px;
   display:none;
@@ -692,6 +700,10 @@ function normalizeState(){
     if(!c.teamA) c.teamA = [];
     if(!c.teamB) c.teamB = [];
     if(!c.reasons) c.reasons = [];
+    if(typeof c.timerRemaining !== 'number') c.timerRemaining = 15 * 60;
+    if(typeof c.timerRunning === 'undefined') c.timerRunning = false;
+    if(typeof c.timerUpdatedAt === 'undefined') c.timerUpdatedAt = null;
+    if(typeof c.timerAlerted === 'undefined') c.timerAlerted = false;
   });
 }
 
@@ -1096,7 +1108,7 @@ function ensureCourts(){
 }
 
 function newEmptyCourt(){
-  return {round:0, teamA:[], teamB:[], scoreA:'', scoreB:'', submitted:false, reasons:[], matchId: null};
+  return {round:0, teamA:[], teamB:[], scoreA:'', scoreB:'', submitted:false, reasons:[], matchId: null, timerRemaining:15*60, timerRunning:false, timerUpdatedAt:null, timerAlerted:false};
 }
 
 function generateForCourt(courtIdx){
@@ -1166,6 +1178,10 @@ function generateForCourt(courtIdx){
   court.matchId = null;
   
   court.reasons = [];
+  court.timerRemaining = 15 * 60;
+  court.timerRunning = false;
+  court.timerUpdatedAt = null;
+  court.timerAlerted = false;
   court.reasons.push("Point matching targeting " + seedPoint + " points.");
   var repeat = (four.find(p=>p.id==split.teamA[0]).partners[split.teamA[1]]||0) > 0 || (four.find(p=>p.id==split.teamB[0]).partners[split.teamB[1]]||0) > 0;
   court.reasons.push(repeat ? '⚠ Repeat teammate' : '✓ No repeated teammates');
@@ -1215,6 +1231,10 @@ $('#btnFinalRound').addEventListener('click', async function(){
   court.submitted = false;
   court.matchId = null;
   court.reasons = ["🌟 FINAL ROUND MATCHMAKING", "Top 4 players selected based on Points and W-L"];
+  court.timerRemaining = 15 * 60;
+  court.timerRunning = false;
+  court.timerUpdatedAt = null;
+  court.timerAlerted = false;
 
   await persist();
   renderAll();
@@ -1258,6 +1278,107 @@ $('#btnGenerate').addEventListener('click', async function(){
   toast(count + ' court' + (count===1?'':'s') + ' generated');
 });
 
+function formatTimer(seconds){
+  seconds = Math.max(0, Math.ceil(seconds));
+  var m = Math.floor(seconds / 60);
+  var sec = seconds % 60;
+  return String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+}
+
+function getTimerRemaining(court){
+  var remaining = Number(court.timerRemaining || 0);
+  if(court.timerRunning && court.timerUpdatedAt){
+    remaining -= (Date.now() - court.timerUpdatedAt) / 1000;
+  }
+  return Math.max(0, remaining);
+}
+
+function playTimerAlarm(){
+  try {
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if(!Ctx) return;
+    var ctx = new Ctx();
+    var now = ctx.currentTime;
+    [0,0.22,0.44].forEach(function(offset){
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.0001, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.22, now + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.18);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(now + offset); osc.stop(now + offset + 0.2);
+    });
+    setTimeout(function(){ try{ctx.close();}catch(e){} }, 1000);
+  } catch(e) {}
+}
+
+async function startCourtTimer(idx){
+  if(!isDevMode || state.dayEnded) return;
+  var court = state.courts[idx];
+  if(!court || !court.round || court.submitted) return;
+  var remaining = getTimerRemaining(court);
+  if(remaining <= 0){
+    court.timerRemaining = 15 * 60;
+    court.timerAlerted = false;
+    remaining = court.timerRemaining;
+  }
+  court.timerRemaining = remaining;
+  court.timerRunning = true;
+  court.timerUpdatedAt = Date.now();
+  await persist();
+  renderAll();
+}
+
+async function pauseCourtTimer(idx){
+  if(!isDevMode || state.dayEnded) return;
+  var court = state.courts[idx];
+  if(!court || !court.timerRunning) return;
+  court.timerRemaining = getTimerRemaining(court);
+  court.timerRunning = false;
+  court.timerUpdatedAt = null;
+  await persist();
+  renderAll();
+}
+
+async function updateCourtTimers(){
+  var changed = false;
+  state.courts.forEach(function(court){
+    if(!court.timerRunning) return;
+    var remaining = getTimerRemaining(court);
+    if(remaining <= 0){
+      court.timerRemaining = 0;
+      court.timerRunning = false;
+      court.timerUpdatedAt = null;
+      if(!court.timerAlerted){
+        court.timerAlerted = true;
+        playTimerAlarm();
+        changed = true;
+      }
+    }
+  });
+  renderCourtTimerDisplays();
+  if(changed) await persist();
+}
+
+function renderCourtTimerDisplays(){
+  $all('[data-court-timer]').forEach(function(el){
+    var idx = parseInt(el.dataset.courtTimer,10);
+    var court = state.courts[idx];
+    if(!court) return;
+    var remaining = getTimerRemaining(court);
+    var display = el.querySelector('.court-timer-display');
+    if(display) display.textContent = formatTimer(remaining);
+    var box = el;
+    box.classList.toggle('expired', remaining <= 0);
+    var startBtn = el.querySelector('[data-timer-act="start"]');
+    var pauseBtn = el.querySelector('[data-timer-act="pause"]');
+    if(startBtn) startBtn.disabled = court.timerRunning;
+    if(pauseBtn) pauseBtn.disabled = !court.timerRunning;
+  });
+}
+
 function renderCourts(){
   var grid = $('#courtsGrid');
   grid.innerHTML = '';
@@ -1285,6 +1406,14 @@ function renderCourts(){
           '<div class="vs-divider">VS</div>' +
           teamLabelHtml('B') + teamRowHtml(teamB) +
           '<div class="net-line"></div>' +
+          '<div class="court-timer" data-court-timer="' + idx + '">' +
+            '<div class="court-timer-label">15-Minute Match Timer</div>' +
+            '<div class="court-timer-display">' + formatTimer(getTimerRemaining(court)) + '</div>' +
+            (isDevMode && !court.submitted ? '<div class="court-timer-actions">' +
+              '<button class="btn btn-primary" data-timer-act="start" data-court="' + idx + '"' + (court.timerRunning ? ' disabled' : '') + '>▶ Start</button>' +
+              '<button class="btn btn-ghost" data-timer-act="pause" data-court="' + idx + '"' + (!court.timerRunning ? ' disabled' : '') + '>⏸ Pause</button>' +
+            '</div>' : '') +
+          '</div>' +
           (court.submitted
             ? '<div style="text-align:center;margin-bottom:10px;"><div class="submitted-tag">Submitted — Team ' + (court.scoreA > court.scoreB ? 'A' : 'B') + ' won</div></div>' +
               (isDevMode
@@ -1366,6 +1495,16 @@ $('#courtsGrid').addEventListener('click', async function(e){
     }
     return;
   }
+  var startTimerBtn = e.target.closest('button[data-timer-act="start"]');
+  if(startTimerBtn){
+    await startCourtTimer(parseInt(startTimerBtn.dataset.court,10));
+    return;
+  }
+  var pauseTimerBtn = e.target.closest('button[data-timer-act="pause"]');
+  if(pauseTimerBtn){
+    await pauseCourtTimer(parseInt(pauseTimerBtn.dataset.court,10));
+    return;
+  }
   var winABtn = e.target.closest('button[data-act="winA"]');
   var winBBtn = e.target.closest('button[data-act="winB"]');
   if(winABtn || winBBtn){
@@ -1384,6 +1523,9 @@ function submitResult(idx, sa, sb){
   var court = state.courts[idx];
   var teamA = court.teamA.map(playerById);
   var teamB = court.teamB.map(playerById);
+  court.timerRemaining = getTimerRemaining(court);
+  court.timerRunning = false;
+  court.timerUpdatedAt = null;
   var winners = sa > sb ? teamA : teamB;
   var losers = sa > sb ? teamB : teamA;
   
@@ -1706,6 +1848,7 @@ async function boot(){
 }
 
 boot();
+setInterval(updateCourtTimers, 250);
 
 })();
 </script>

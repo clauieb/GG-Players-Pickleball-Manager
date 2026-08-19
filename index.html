@@ -1555,6 +1555,130 @@ function renderCourtTimerDisplays(){
   });
 }
 
+// Transient, per-browser-tab UI state for the manual court-assignment
+// panels — intentionally NOT part of `state`, so it doesn't sync to other
+// devices or persist to Firebase. It's just "is this court's picker open,
+// and what has the organizer selected so far."
+var manualPanel = {};
+
+function manualAssignPanelHtml(idx){
+  if(!manualPanel[idx] || !manualPanel[idx].open) return '';
+  var lockedIds = occupiedByOtherCourts(idx);
+  var eligible = state.players.filter(function(p){ return p.playingToday && !lockedIds[p.id]; })
+                               .slice().sort(function(a,b){ return a.name.localeCompare(b.name); });
+  var sel = manualPanel[idx].selections;
+
+  function optionsHtml(slotKey){
+    var current = sel[slotKey];
+    var chosenElsewhere = {};
+    Object.keys(sel).forEach(function(k){ if(k !== slotKey && sel[k]) chosenElsewhere[sel[k]] = true; });
+    var opts = '<option value="">— Select player —</option>';
+    eligible.forEach(function(p){
+      var disabled = chosenElsewhere[String(p.id)] ? ' disabled' : '';
+      var selected = String(p.id) === String(current) ? ' selected' : '';
+      opts += '<option value="' + p.id + '"' + selected + disabled + '>' + escapeHtml(p.name) + ' (' + (p.points||0) + ' pts)</option>';
+    });
+    return opts;
+  }
+
+  return '' +
+    '<div class="manual-assign-panel" style="margin-top:10px;padding:12px;border:1px dashed var(--line);border-radius:10px;background:rgba(47,127,245,0.04);">' +
+      '<div style="font-weight:700;font-size:12.5px;margin-bottom:10px;">🎯 Manually choose this court\'s matchup</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">' +
+        '<div><label style="display:block;font-size:11px;color:var(--ink-dim);margin-bottom:3px;">Team A — Player 1</label>' +
+          '<select class="manual-select" data-slot="a1" data-court="' + idx + '" style="width:100%;">' + optionsHtml('a1') + '</select></div>' +
+        '<div><label style="display:block;font-size:11px;color:var(--ink-dim);margin-bottom:3px;">Team A — Player 2</label>' +
+          '<select class="manual-select" data-slot="a2" data-court="' + idx + '" style="width:100%;">' + optionsHtml('a2') + '</select></div>' +
+        '<div><label style="display:block;font-size:11px;color:var(--ink-dim);margin-bottom:3px;">Team B — Player 1</label>' +
+          '<select class="manual-select" data-slot="b1" data-court="' + idx + '" style="width:100%;">' + optionsHtml('b1') + '</select></div>' +
+        '<div><label style="display:block;font-size:11px;color:var(--ink-dim);margin-bottom:3px;">Team B — Player 2</label>' +
+          '<select class="manual-select" data-slot="b2" data-court="' + idx + '" style="width:100%;">' + optionsHtml('b2') + '</select></div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button class="btn btn-primary btn-sm" style="flex:1" data-act="manual-confirm" data-court="' + idx + '">✅ Confirm Matchup</button>' +
+        '<button class="btn btn-ghost btn-sm" data-act="manual-cancel" data-court="' + idx + '">Cancel</button>' +
+      '</div>' +
+    '</div>';
+}
+
+async function confirmManualAssign(idx){
+  var court = state.courts[idx];
+  var panel = manualPanel[idx];
+  if(!court || !panel) return;
+  var sel = panel.selections;
+  var ids = [sel.a1, sel.a2, sel.b1, sel.b2];
+
+  if(ids.some(function(v){ return !v; })){ toast('Please select all 4 players'); return; }
+  var seen = {};
+  if(ids.some(function(id){ if(seen[id]) return true; seen[id] = true; return false; })){
+    toast('Each player can only be selected once'); return;
+  }
+  var lockedIds = occupiedByOtherCourts(idx);
+  if(ids.some(function(id){ return lockedIds[id]; })){
+    toast('One of the selected players is already on another court'); return;
+  }
+
+  var teamAIds = [parseInt(sel.a1,10), parseInt(sel.a2,10)];
+  var teamBIds = [parseInt(sel.b1,10), parseInt(sel.b2,10)];
+  var four = teamAIds.concat(teamBIds).map(playerById).filter(Boolean);
+  if(four.length < 4){ toast('One of the selected players could not be found'); return; }
+  var fourIds = {}; four.forEach(function(p){ fourIds[p.id] = true; });
+
+  if(panel.mode === 'edit'){
+    // Editing an already-active match: keep the round, timer, and score as
+    // they are — only fix bookkeeping for whichever players actually changed.
+    var oldIds = {};
+    (court.teamA||[]).concat(court.teamB||[]).forEach(function(id){ oldIds[id] = true; });
+    var removed = state.players.filter(function(p){ return oldIds[p.id] && !fourIds[p.id]; });
+    var added = state.players.filter(function(p){ return fourIds[p.id] && !oldIds[p.id]; });
+    removed.forEach(function(p){ p.waitingRounds = (p.waitingRounds||0) + 1; p.status = 'waiting'; });
+    added.forEach(function(p){ p.waitingRounds = 0; p.status = 'playing'; });
+
+    court.teamA = teamAIds;
+    court.teamB = teamBIds;
+    var teamAp1e = four.find(function(p){ return p.id === teamAIds[0]; });
+    var teamBp1e = four.find(function(p){ return p.id === teamBIds[0]; });
+    var repeatE = (teamAp1e.partners[teamAIds[1]]||0) > 0 || (teamBp1e.partners[teamBIds[1]]||0) > 0;
+    court.reasons = ['✏️ Players manually edited by organizer'];
+    court.reasons.push(repeatE ? '⚠ Repeat teammate' : '✓ No repeated teammates');
+
+    delete manualPanel[idx];
+    await persist();
+    renderAll();
+    toast('Court ' + (idx+1) + ' — players updated');
+    return;
+  }
+
+  var stillFree = state.players.filter(function(p){ return p.playingToday && !lockedIds[p.id] && !fourIds[p.id]; });
+  stillFree.forEach(function(p){ p.waitingRounds++; p.status = 'waiting'; });
+  four.forEach(function(p){ p.waitingRounds = 0; p.status = 'playing'; });
+
+  court.round = (court.round || 0) + 1;
+  court.teamA = teamAIds;
+  court.teamB = teamBIds;
+  court.scoreA = '';
+  court.scoreB = '';
+  court.submitted = false;
+  court.matchId = null;
+  court.timerRemaining = 15 * 60;
+  court.timerRunning = false;
+  court.timerUpdatedAt = null;
+  court.timerAlerted = false;
+  court.timerAlarmDismissed = false;
+  stopAlarmLoop(idx);
+
+  var teamAp1 = four.find(function(p){ return p.id === teamAIds[0]; });
+  var teamBp1 = four.find(function(p){ return p.id === teamBIds[0]; });
+  var repeat = (teamAp1.partners[teamAIds[1]]||0) > 0 || (teamBp1.partners[teamBIds[1]]||0) > 0;
+  court.reasons = ['🎯 Manually assigned by organizer'];
+  court.reasons.push(repeat ? '⚠ Repeat teammate' : '✓ No repeated teammates');
+
+  delete manualPanel[idx];
+  await persist();
+  renderAll();
+  toast('Court ' + (idx+1) + ' — manual matchup set');
+}
+
 function renderCourts(){
   var grid = $('#courtsGrid');
   grid.innerHTML = '';
@@ -1573,7 +1697,11 @@ function renderCourts(){
       if(!hasMatch){
         bodyHtml = isDevMode
           ? '<div class="court-empty">This court hasn\'t started yet.</div>' +
-            '<button class="btn btn-primary btn-block" data-act="gen" data-court="' + idx + '">▶ Generate Round 1</button>'
+            '<div style="display:flex; gap:8px;">' +
+              '<button class="btn btn-primary btn-block" data-act="gen" data-court="' + idx + '">▶ Generate Round 1</button>' +
+              '<button class="btn btn-ghost" data-act="manual-toggle" data-court="' + idx + '">🎯 Manual</button>' +
+            '</div>' +
+            manualAssignPanelHtml(idx)
           : '<div class="court-empty">This court hasn\'t started yet.</div>' +
             '<div class="view-note">Waiting for the organizer to start this court.</div>';
       } else {
@@ -1599,14 +1727,18 @@ function renderCourts(){
               (isDevMode
                 ? '<div style="display:flex; gap: 8px;">' +
                     '<button class="btn btn-primary" style="flex:1" data-act="gen" data-court="' + idx + '">🔄 Generate Next Round</button>' +
+                    '<button class="btn btn-ghost" data-act="manual-toggle" data-court="' + idx + '">🎯 Manual</button>' +
                     '<button class="btn btn-ghost" data-act="undo" data-court="' + idx + '">Undo</button>' +
-                  '</div>'
+                  '</div>' +
+                  manualAssignPanelHtml(idx)
                 : '')
             : (isDevMode
                 ? '<div class="win-row">' +
                     '<button class="btn btn-win btn-block" data-act="winA" data-court="' + idx + '">🏆 Team A Won</button>' +
                     '<button class="btn btn-win btn-block" data-act="winB" data-court="' + idx + '">🏆 Team B Won</button>' +
-                  '</div>'
+                  '</div>' +
+                  '<button class="btn btn-ghost btn-sm btn-block" data-act="manual-toggle" data-court="' + idx + '" style="margin-top:8px;">✏️ Edit Players</button>' +
+                  manualAssignPanelHtml(idx)
                 : '<div class="view-note">Match in progress — waiting for a result.</div>')
           ) +
           '<button class="btn btn-ghost btn-sm btn-block" data-act="why" data-court="' + idx + '" style="margin-top:8px;">Why this matchup?</button>' +
@@ -1647,6 +1779,16 @@ function renderCourts(){
   if(!todayPlayers.length){ bl.innerHTML = '<div style="padding:10px 16px;color:var(--ink-dim);font-size:12.5px;">No one marked in for today yet.</div>'; }
 }
 
+$('#courtsGrid').addEventListener('change', function(e){
+  var sel = e.target.closest('select.manual-select');
+  if(!sel) return;
+  var idx = parseInt(sel.dataset.court, 10);
+  var slot = sel.dataset.slot;
+  if(!manualPanel[idx]) manualPanel[idx] = { open: true, mode: 'new', selections: {a1:'', a2:'', b1:'', b2:''} };
+  manualPanel[idx].selections[slot] = sel.value;
+  renderCourts(); // re-render so the "already picked" options grey out in the other dropdowns
+});
+
 $('#courtsGrid').addEventListener('click', async function(e){
   var whyBtn = e.target.closest('button[data-act="why"]');
   if(whyBtn){
@@ -1673,6 +1815,36 @@ $('#courtsGrid').addEventListener('click', async function(e){
       renderAll();
       toast('Court ' + (gIdx+1) + ' — round ' + state.courts[gIdx].round + ' generated');
     }
+    return;
+  }
+  var manualToggleBtn = e.target.closest('button[data-act="manual-toggle"]');
+  if(manualToggleBtn){
+    var mIdx = parseInt(manualToggleBtn.dataset.court, 10);
+    if(manualPanel[mIdx] && manualPanel[mIdx].open){
+      delete manualPanel[mIdx];
+    } else {
+      var mCourt = state.courts[mIdx];
+      var isEditingActive = mCourt && mCourt.round > 0 && (mCourt.teamA||[]).length === 2 && (mCourt.teamB||[]).length === 2 && !mCourt.submitted;
+      manualPanel[mIdx] = {
+        open: true,
+        mode: isEditingActive ? 'edit' : 'new',
+        selections: isEditingActive
+          ? { a1: String(mCourt.teamA[0]), a2: String(mCourt.teamA[1]), b1: String(mCourt.teamB[0]), b2: String(mCourt.teamB[1]) }
+          : { a1:'', a2:'', b1:'', b2:'' }
+      };
+    }
+    renderCourts();
+    return;
+  }
+  var manualCancelBtn = e.target.closest('button[data-act="manual-cancel"]');
+  if(manualCancelBtn){
+    delete manualPanel[parseInt(manualCancelBtn.dataset.court, 10)];
+    renderCourts();
+    return;
+  }
+  var manualConfirmBtn = e.target.closest('button[data-act="manual-confirm"]');
+  if(manualConfirmBtn){
+    await confirmManualAssign(parseInt(manualConfirmBtn.dataset.court, 10));
     return;
   }
   var startTimerBtn = e.target.closest('button[data-timer-act="start"]');
